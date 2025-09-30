@@ -3,5 +3,5 @@ This interactive tool uses Streamlit to plot atmospheric profiles of Mars. Selec
 
 ## How to run
 1. Download MCS_code.py
-2. Install Requirements.txt libraries. Just download "requirements.txt" and execute in the terminal: "pip install -r requirements.txt"
+2. Install requirements.txt libraries. Just download "requirements.txt" and execute in the terminal: "pip install -r requirements.txt"
 3. To launch write in the terminal: "streamlit run MCS_code.py"
