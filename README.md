@@ -12,4 +12,4 @@ This interactive tool uses Streamlit to plot atmospheric profiles of Mars. Selec
    $ streamlit run MCS_code.py
    ```
 ## Run in Streamlit App Web
-[![Streamlit App](https://mcs-atmospheric-profiles-itr3l6tsjzinwdsc3opdyh.streamlit.app/)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://mcs-atmospheric-profiles-itr3l6tsjzinwdsc3opdyh.streamlit.app/)
