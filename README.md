@@ -13,3 +13,7 @@ This interactive tool uses Streamlit to plot atmospheric profiles of Mars. Selec
    ```
 ## Run in Streamlit App Web
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://mcs-atmospheric-profiles-itr3l6tsjzinwdsc3opdyh.streamlit.app/)
+
+## DOI
+[![DOI](https://zenodo.org/badge/1067020080.svg)](https://doi.org/10.5281/zenodo.17427725)
+
