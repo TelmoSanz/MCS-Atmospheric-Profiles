@@ -1,5 +1,6 @@
 # Download as app.py
 # Launch in terminal: streamlit run app.py
+# Modificación de la primera versión del programa al añadir la hora local en los datos y una barra de control para filtrar según la hora local
 
 import streamlit as st
 import requests
@@ -379,6 +380,13 @@ def crear_graficas(df_filtrado, lat_range, lon_range, local_range):
     )
     
     plt.tight_layout()
+
+    # === Fijar límites de altitud de manera definitiva (resuelve el problema del autoescalado dado por twinx()) ===
+    if not df_temp.empty:
+        ax1b.set_autoscale_on(False)
+        ax1b.set_ylim(alt_min, alt_max)
+        ax2.set_autoscale_on(False)
+        ax2.set_ylim(alt_min, alt_max)
     return fig
 
 # --- Streamlit ---
