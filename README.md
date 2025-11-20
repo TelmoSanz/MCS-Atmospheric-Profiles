@@ -2,7 +2,7 @@
 This interactive tool uses Streamlit to plot atmospheric profiles of Mars. Select the date and custom latitudinal and longitudinal range to visualize data from the MRO/MCS in Mars.
 
 ## How to run
-1. Download MCS_code.py and marstime directory (make sure both are in the same folder)
+1. Download MCS_code.py and marstime folder (make sure both are in the same directory)
 2. Install requirements.txt libraries:
    ```
    $ pip install -r requirements.txt
