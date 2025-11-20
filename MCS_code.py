@@ -1,11 +1,11 @@
-# Download as app.py
+# Save as app.py
 # Launch in terminal: streamlit run app.py
-# Modificación de la primera versión del programa al añadir la hora local en los datos y una barra de control para filtrar según la hora local
 
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import datetime
+from marstime import marstime # Para calcular MY y Ls
 import os
 from pathlib import Path
 import pandas as pd
@@ -13,7 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
-from io import BytesIO  # <-- Agrega esta línea
+from io import BytesIO  
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 
@@ -221,7 +221,96 @@ def cargar_multiples_archivos(directorio):
     return pd.DataFrame()
 
 # --- Funciones para gráficas (del segundo código) ---
+
+# Función para Cp(T)/R
+def frac_T(T):
+    '''Definimos los coeficientes para la expresión 
+    a1, a2, a3, a4, a5, a6, a7
+
+    Fuente : Capitelli, M., Giordano, D., & Warmbein, B. (Eds.). (2005). 
+            Tables of internal partition functions and thermodynamic properties of high-temperature Mars-atmosphere species from 50K to 50000K. 
+            The Netherlands: European Space Agency.
+    '''
+    a1 = -6.54120227e-7
+    a2 = 2.74075894e-3
+    a3 = -2.7641862e-1
+    a4 = 1.956385613e3
+    a5 = -2.76968792e5
+    a6 = 2.128976190e7
+    a7 = -6.65634099e8
+
+    fract = a1*(T/1.0e5)**(-2) + a2*(T/1.0e5)**(-1) + a3 + a4*(T/1.0e5) + a5*(T/1.0e5)**2 + a6*(T/1.0e5)**3 + a7*(T/1.0e5)**4
+
+    return fract
+
+def frac_T_dev(T):
+    '''
+    Derivada de frac_T
+    '''
+
+    a1 = -6.54120227e-7
+    a2 = 2.74075894e-3
+    a3 = -2.7641862e-1
+    a4 = 1.956385613e3
+    a5 = -2.76968792e5
+    a6 = 2.128976190e7
+    a7 = -6.65634099e8
+
+    fract_dev = -2.0*a1*(1/1.0e5)**(-2)*T**(-3) - a2*(1/1.0e5)**(-1)*T**(-2) + a4*(1/1.0e5) + a5*(1/1.0e5)**2*T + a6*(1/1.0e5)**3*T**2 + a7*(1/1.0e5)**4*T**3
+
+    return fract_dev
+
+
+
+def calcular_temp_potencial(T, P, P0=610.0):
+    """
+    Calcula la temperatura potencial θ [K] para Marte.
+    T : array-like de temperaturas [K]
+    P : array-like de presiones [Pa]
+    P0 : presión de referencia [Pa] (por defecto 610 Pa)
+    """
+    T = np.array(T, dtype=float)
+    P = np.array(P, dtype=float)
+
+    Cp_R = frac_T(T)  # Cp(T)/R
+    R_Cp = 1.0 / Cp_R # R/Cp(T)
+    
+    theta = T * (P0 / P)**R_Cp
+    return theta
+
+def calcular_temp_potencial_err(T,T_err, P, P0=610.0):
+    '''
+    Calcula el error en la temperatura potencial θ [K] para Marte.
+    T : array-like de temperaturas [K]
+    T_err : array-like de errores de temperatura [K]
+    P : array-like de presiones [Pa]
+    P0 : presión de referencia [Pa] (por defecto 610 Pa)
+
+    Asume único error en T sacado a partir de los datos de MCS. 
+    '''
+
+    T = np.array(T, dtype=float)
+    T_err = np.array(T_err, dtype=float)
+    P = np.array(P, dtype=float)
+
+    f_T = frac_T(T)  # Cp(T)/R
+    f_T_prim = frac_T_dev(T) # [Cp(T)/R]'
+    n_T = 1.0 / f_T # R/Cp(T)
+
+    a = P0/P
+
+    theta_err = a**n_T * np.abs(1 - T * np.log(a) * f_T_prim / f_T**2) * T_err
+    return theta_err
+
+
+
+
 def calcular_presion_saturacion(T, xvvco2):
+    '''
+    Fuente: Hu, R., Cahoy, K., & Zuber, M. T. (2012). 
+    Mars atmospheric CO2 condensation above the north and south poles as revealed by radio occultation, climate sounder, and laser ranging observations. 
+    Journal of Geophysical Research: Planets, 117(E7).
+    '''
     T = np.array(T)
     logPsat = np.zeros_like(T)
     
@@ -241,17 +330,22 @@ def calcular_presion_saturacion(T, xvvco2):
     return (10**logPsat)*1.0e5/xvvco2
 
 def calcular_presion_saturacion_H2O(T, xvvh2o):
+    '''
+    Fuente: Richardson, M. I., & Wilson, R. J. (2002). 
+    Investigation of the nature and stability of the Martian seasonal water cycle with a general circulation model. 
+    Journal of Geophysical Research: Planets, 107(E5), 7-1.
+    '''
     T = np.array(T)
     Psat = 611 * np.exp(22.5*(1 - 273.16/T))
     return Psat/xvvh2o
 
-def crear_graficas(df_filtrado, lat_range, lon_range, local_range):
+def crear_graficas(df_filtrado, lat_range, lon_range, local_range, MY, Ls):
     if df_filtrado.empty:
         st.warning("There is no data for the range selected")
         return None
     
     # Crear figura nueva
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(27, 7))
     
     # --- Gráfica 1: Temperatura vs Presión/Altitud ---
     df_temp = df_filtrado[(df_filtrado['Pres'].notna()) &
@@ -273,10 +367,10 @@ def crear_graficas(df_filtrado, lat_range, lon_range, local_range):
                     color='firebrick', alpha=0.6, zorder=2, 
                     label='Temperature Profiles')
         
-        # 2. EJE SECUNDARIO: Temperatura vs Altitud (transparente, solo para escala)
+        # 2. EJE SECUNDARIO: Temperatura vs Altitud (transparente, solo para escala y pruebas)
         ax1b.plot(df_temp['T'], df_temp['Alt'], 'x', color='blue', alpha=0, label=None)
         
-        # 3. CURVAS DE SATURACIÓN (igual que en Jupyter)
+        # 3. CURVAS DE SATURACIÓN 
         T_range = np.linspace(50, 300, 100)
         
         PsatCO2_min = calcular_presion_saturacion(T_range, Xvv_CO2_min)
@@ -290,7 +384,7 @@ def crear_graficas(df_filtrado, lat_range, lon_range, local_range):
         ax1.semilogy(T_range, PsatH2O_max, ':', color='lime', zorder=5,
                     linewidth=2, label=f'Psat H₂O X_max={Xvv_H2O_max:.2e}')
         
-        # 4. CONFIGURACIÓN DE EJES (COPIADO DIRECTAMENTE DE JUPYTER)
+        # 4. CONFIGURACIÓN DE EJES 
         ax1.set_xlabel('Temperature [K]', fontsize=15)
         ax1.set_xlim(50, 300)
         ax1b.set_ylabel('Altitude [km]', fontsize=15)
@@ -321,59 +415,96 @@ def crear_graficas(df_filtrado, lat_range, lon_range, local_range):
         lines1, labels1 = ax1.get_legend_handles_labels()
         ax1.legend(lines1, labels1, loc='upper right', fontsize=13)
     
-    # --- Gráfica de Opacidad ---
+        # --- Gráfica de Opacidad ---
         df_dust = df_filtrado[df_filtrado['Dust'].notna()]
-        df_ice  = df_filtrado[df_filtrado['H2Oice'].notna()]
+        df_ice  = df_filtrado[df_filtrado['H2Oice'].notna()] 
 
     
-    if not df_dust.empty or not df_ice.empty:
-        ax2.set_xscale('log')
-        ax2.set_xlim(1e-5, 1)
+        if not df_dust.empty or not df_ice.empty:
+            ax2b = ax2.twinx()
+            ax2.set_xscale('log')
+            ax2.set_xlim(1e-5, 1)
         
-        # Usar mismos límites de altitud que la primera gráfica
-        if not df_temp.empty:
-            ax2.set_ylim(alt_min, alt_max)
-            ax2.set_yticks(yticks)
-        else:
-            # Si no hay datos de temp, calcular de dust/ice
-            alt_data = pd.concat([df_dust['Alt'], df_ice['Alt']] if not df_ice.empty else [df_dust['Alt']])
-            if not alt_data.empty:
-                ax2.set_ylim(alt_data.min(), alt_data.max())
+            # Usar mismos límites de altitud que la primera gráfica
+            if not df_temp.empty:
+                ax2b.set_ylim(alt_min, alt_max)
+                ax2b.set_yticks(yticks)
+                ax2.set_ylim(pres_min, pres_max)
+            else:
+                # Si no hay datos de temp, calcular de dust/ice - Diria que en principio esta condicion de no encontrar datos en df_temp pero si en df_dust y df_ice no debería ocurrir
+                alt_data = pd.concat([df_dust['Alt'], df_ice['Alt']] if not df_ice.empty else [df_dust['Alt']])
+                pres_data = pd.concat([df_dust['Pres'], df_ice['Pres']] if not df_ice.empty else [df_dust['Pres']])
+                if not alt_data.empty:
+                    ax2b.set_ylim(alt_data.min(), alt_data.max())
+                    ax2.set_ylim(pres_data.max(), pres_data.min())
         
-        ax2.tick_params(axis='both', labelsize=14)
-        ax2.yaxis.labelpad = 10
+            ax2.tick_params(axis='both', labelsize=14)
+            ax2.yaxis.labelpad = 10
         
-        if not df_dust.empty:
-            ax2.errorbar(df_dust['Dust'], df_dust['Alt'],
+            if not df_dust.empty:
+                ax2.errorbar(df_dust['Dust'], df_dust['Pres'],
                         xerr=df_dust['Dust_err'], elinewidth=0.5,
                         fmt='o', color='sienna', ms=3, 
                         label='Dust', alpha=0.6, capsize=3)
         
-        if not df_ice.empty:
-            ax2.errorbar(df_ice['H2Oice'], df_ice['Alt'],
+            if not df_ice.empty:
+                ax2.errorbar(df_ice['H2Oice'], df_ice['Pres'],
                         xerr=df_ice['H2Oice_err'], elinewidth=0.5,
                         fmt='o', color='royalblue', ms=3,
                         label='Ice H₂O', alpha=0.6, capsize=3)
         
-        ax2.set_xlabel('Opacity', fontsize=15)
-        ax2.set_ylabel('Altitude [km]', fontsize=15)
-        ax2.grid(True)
-        ax2.legend(fontsize=13)
-    else:
-        ax2.text(0.5, 0.5, 'No hay datos de opacidad', 
+            ax2.set_xlabel('Opacity', fontsize=15)
+            ax2.set_ylabel('Pressure [Pa]', fontsize=15, color='firebrick')
+            ax2b.yaxis.set_label_position("right")
+        
+            ax2.tick_params(axis='y', labelcolor='firebrick', labelsize=14)
+            ax2.tick_params(axis='x', labelsize=14)
+            ax2b.tick_params(axis='y', labelsize=14)
+            ax2b.set_ylabel('Altitude [km]', fontsize=15)
+            ax2.set_yscale('log')
+            ax2.grid(True)
+            ax2.legend(fontsize=13)
+        else:
+            ax2.text(0.5, 0.5, 'No opacity data available', 
                 ha='center', va='center', transform=ax2.transAxes, fontsize=12)
-        ax2.set_xlabel('Opacity', fontsize=15)
-        ax2.set_ylabel('Altitude [km]', fontsize=15)
-    
-    # Ajustar posición para alineación perfecta (como en Jupyter)
-    if not df_temp.empty:
+            ax2.set_xlabel('Opacity', fontsize=15)
+            ax2.set_ylabel('Pressure [Pa]', fontsize=15)
+            ax2b.set_ylabel('Altitude [km]', fontsize=15)
+        
+        # --- Gráfica de Temperatura Potencial ---
+        df_theta = df_filtrado.copy()
+
+        ax3b = ax3.twinx()
+        ax3.errorbar(df_theta['Theta'], df_theta['Pres'], xerr=df_theta['Theta_err'] , fmt='o', ms=3, elinewidth=0.5, color='darkred', alpha=0.6, zorder=2, label='Potential Temperature Profiles')
+
+        ax3b.plot(df_theta['Theta'], df_theta['Alt'], 'x', color='blue', alpha=0)
+
+        ax3.set_xscale('linear')
+        ax3.set_yscale('log')
+        ax3.set_xlabel('Potential Temperature [K]', fontsize=15)
+        ax3.set_ylabel('Pressure [Pa]', fontsize=15, color='firebrick')
+        ax3b.set_ylabel('Altitude [km]', fontsize=15)
+        ax3.tick_params(axis='x', labelsize=14)
+        ax3.tick_params(axis='y', labelcolor='firebrick', labelsize=14)
+        ax3b.tick_params(axis='y', labelsize=14)
+        ax3.set_xlim(150, 400) # Una vez ejecutado el programa se puede cambiar esto al momento volver a plotear y las gráficas se actualizan en base a estos nuevos límites
+        ax3.set_ylim(pres_min, pres_max)
+        ax3b.set_ylim(alt_min, alt_max)
+        ax3b.set_yticks(yticks)
+        ax3.grid(True)
+        ax3.legend(fontsize=13)
+
+        # Ajustar posición para alineación perfecta (como en Jupyter)
         pos1 = ax1.get_position()
         pos2 = ax2.get_position()
+        pos3 = ax3.get_position()
         ax2.set_position([pos2.x0, pos1.y0, pos2.width, pos1.height])
+        ax3.set_position([pos3.x0, pos1.y0, pos3.width, pos1.height])
     
     # Título general
     fig.suptitle(
-        f"Atmospheric Profiles | Latitude: {lat_range[0]:.1f} to {lat_range[1]:.1f}°N | "
+        f"Atmospheric Profiles MY {MY:.0f} Ls = {Ls:.1f}° | "
+        f"Latitude: {lat_range[0]:.1f} to {lat_range[1]:.1f}°N | "
         f"Longitude: {lon_range[0]:.1f} to {lon_range[1]:.1f}°E | "
         f"LTST: {local_range[0]:.1f} to {local_range[1]:.1f} hrs",
         fontsize=18, y=1.02, fontweight = 'bold'
@@ -384,10 +515,20 @@ def crear_graficas(df_filtrado, lat_range, lon_range, local_range):
     # === Fijar límites de altitud de manera definitiva (resuelve el problema del autoescalado dado por twinx()) ===
     if not df_temp.empty:
         ax1b.set_autoscale_on(False)
+        ax2b.set_autoscale_on(False)
+        ax3b.set_autoscale_on(False)
         ax1b.set_ylim(alt_min, alt_max)
-        ax2.set_autoscale_on(False)
-        ax2.set_ylim(alt_min, alt_max)
+        ax2b.set_ylim(alt_min, alt_max)
+        ax3b.set_ylim(alt_min, alt_max)
+
     return fig
+
+
+
+# ================================================================================================================================
+# ================================================================================================================================
+
+
 
 # --- Streamlit ---
 st.title("Martian Atmospheric Profiles - MCS Data")
@@ -402,6 +543,10 @@ fecha = st.date_input(
     max_value=fecha_max
 )
 
+# Cálculo MY y Ls
+MT1 = marstime(datetime.datetime(fecha.year, fecha.month, fecha.day))
+mars_year = MT1.MY
+mars_ls = MT1.Ls # Mirar definición de Ls en directorio marstime
 
 
 if st.button("Find, load and process data"):
@@ -463,30 +608,67 @@ if 'df_combinado' in st.session_state and not st.session_state.df_combinado.empt
         (df_combinado['Lat'].between(lat_min, lat_max)) &
         (df_combinado['Lon'].between(lon_min, lon_max)) &
         (df_combinado['LocalTime'].between(local_min, local_max))
-    ]
+    ].copy()
+
+    # === Añadir columnas Theta y Theta_err al DataFrame original filtrado ===
+    if not df_filtrado.empty and 'T' in df_filtrado.columns and 'Pres' in df_filtrado.columns:
+        df_filtrado['Theta'] = calcular_temp_potencial(df_filtrado['T'], df_filtrado['Pres'])
+        df_filtrado['Theta_err'] = calcular_temp_potencial_err(df_filtrado['T'], df_filtrado['T_err'], df_filtrado['Pres'])
+
+        # Reordenar columnas: colocar Theta y Theta_err justo después de T_err
+        cols = list(df_filtrado.columns)
+        if 'T_err' in cols:
+            idx = cols.index('T_err') + 1
+            for col in ['Theta', 'Theta_err']:
+                cols.insert(idx, cols.pop(cols.index(col)))
+                idx += 1
+            df_filtrado = df_filtrado[cols]
+
     
     # Mostrar estadísticas
     st.write(f"**Data in selected range:** {len(df_filtrado)} records")
     st.write(f"**Altitude range:** {df_filtrado['Alt'].min():.1f} to {df_filtrado['Alt'].max():.1f} km")
     st.write(f"**Pressure range:** {df_filtrado['Pres'].min():.3f} to {df_filtrado['Pres'].max():.3f} Pa")
     
-    # Crear y mostrar gráficas
-    if st.button("Plot"):
-        fig = crear_graficas(df_filtrado, (lat_min, lat_max), (lon_min, lon_max), (local_min, local_max))
-        if fig:
-            st.pyplot(fig)
-            
-            # Opción para descargar la figura
-            buf = BytesIO()
-            fig.savefig(buf, format="jpeg", dpi=300, bbox_inches='tight')
-            st.download_button(
-                label="Download image as JPEG",
-                data=buf.getvalue(),
-                file_name=f"perfil_mcs_{fecha}_lat{lat_min}-{lat_max}_lon{lon_min}-{lon_max}.jpeg",
-                mime="image/jpeg"
-            )
+# Crear y mostrar gráficas
+if st.button("Plot"):
+    fig = crear_graficas(df_filtrado, (lat_min, lat_max), (lon_min, lon_max),
+                          (local_min, local_max), mars_year, mars_ls)
+    if fig:
+        # Guardar la figura en session_state para que sobreviva re-ejecuciones
+        st.session_state.figura = fig
+
+# --- Mostrar figura si existe ---
+if "figura" in st.session_state:
+    st.pyplot(st.session_state.figura)
+
+    # --- Opciones de descarga ---
+    with st.expander("Download options"):
+        formatos = ["jpeg", "png", "pdf", "svg"]
+        formato_seleccionado = st.selectbox("Select download format:", formatos, index=0)
+
+        # Crear buffer de descarga solo si ya existe la figura
+        buf = BytesIO()
+        st.session_state.figura.savefig(buf, format=formato_seleccionado, dpi=300, bbox_inches='tight')
+        buf.seek(0)
+
+        mime_types = {
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+            "pdf": "application/pdf",
+            "svg": "image/svg+xml"
+        }
+        mime_type = mime_types.get(formato_seleccionado, "application/octet-stream")
+
+        st.download_button(
+            label=f"Download image as {formato_seleccionado.upper()}",
+            data=buf.getvalue(),
+            file_name=f"profile_mcs_{fecha}_lat{lat_min}-{lat_max}_lon{lon_min}-{lon_max}.{formato_seleccionado}",
+            mime=mime_type,
+        )
+
 
     
     # Mostrar datos en tabla (opcional)
     if st.checkbox("Display data"):
-        st.dataframe(df_filtrado)
+        st.dataframe(df_filtrado) 
